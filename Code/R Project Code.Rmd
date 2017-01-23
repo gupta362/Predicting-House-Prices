@@ -1,0 +1,506 @@
+---
+title: "Predicting House Prices in King County, Washington"
+author: "Rated R"
+date: "December 3, 2016"
+output: html_document
+---
+
+```{r Clearing Global Environment}
+# Clearing Global Environment
+rm(list=ls()) 
+```
+
+```{r Load Required Packages, message=FALSE, warning=FALSE}
+if (!("reshape2" %in% names(installed.packages()[,"Package"]))) {install.packages("reshape2")}
+suppressMessages(library(reshape2, quietly = TRUE))
+if (!("ade4" %in% names(installed.packages()[,"Package"]))) {install.packages("ade4")}
+suppressMessages(library(ade4, quietly = TRUE))
+if (!("plyr" %in% names(installed.packages()[,"Package"]))) {install.packages("plyr")}
+suppressMessages(library(plyr, quietly = TRUE))
+if (!("DAAG" %in% names(installed.packages()[,"Package"]))) {install.packages("DAAG")}
+suppressMessages(library(DAAG, quietly = TRUE))
+if (!("sqldf" %in% names(installed.packages()[,"Package"]))) {install.packages("sqldf")}
+suppressMessages(library(sqldf, quietly = TRUE))
+if (!("lubridate" %in% names(installed.packages()[,"Package"]))) {install.packages("lubridate")}
+suppressMessages(library(lubridate, quietly = TRUE))
+if (!("caret" %in% names(installed.packages()[,"Package"]))) {install.packages("caret")}
+suppressMessages(library(caret, quietly = TRUE))
+if (!("GGally" %in% names(installed.packages()[,"Package"]))) {install.packages("GGally")}
+suppressMessages(library(GGally, quietly = TRUE))
+if (!("ggplot2" %in% names(installed.packages()[,"Package"]))) {install.packages("ggplot2")}
+suppressMessages(library(ggplot2, quietly = TRUE))
+if (!("IDPmisc" %in% names(installed.packages()[,"Package"]))) {install.packages("IDPmisc")}
+suppressMessages(library(IDPmisc, quietly = TRUE))
+if (!("faraway" %in% names(installed.packages()[,"Package"]))) {install.packages("faraway")}
+suppressMessages(library(faraway, quietly = TRUE))
+if (!("lmtest" %in% names(installed.packages()[,"Package"]))) {install.packages("lmtest")}
+suppressMessages(library(lmtest, quietly = TRUE))
+if (!("lawstat" %in% names(installed.packages()[,"Package"]))) {install.packages("lawstat")}
+suppressMessages(library(lawstat, quietly = TRUE))
+if (!("nortest" %in% names(installed.packages()[,"Package"]))) {install.packages("nortest")}
+suppressMessages(library(nortest, quietly = TRUE))
+if (!("MASS" %in% names(installed.packages()[,"Package"]))) {install.packages("MASS")}
+suppressMessages(library(MASS, quietly = TRUE))
+if (!("scales" %in% names(installed.packages()[,"Package"]))) {install.packages("scales")}
+suppressMessages(library(scales, quietly = TRUE))
+if (!("gridExtra" %in% names(installed.packages()[,"Package"]))) {install.packages("gridExtra")}
+suppressMessages(library(gridExtra, quietly = TRUE))
+if (!("corrplot" %in% names(installed.packages()[,"Package"]))) {install.packages("corrplot")}
+suppressMessages(library(corrplot, quietly = TRUE))
+colors<-colors() # save vector of colors for custom plots
+```
+
+```{r Loading Datasets}
+# Loading Datasets using urls
+# Housing Data
+house_data = read.csv("https://www.dropbox.com/s/m3pvj69x125e5tn/kc_house_data.csv?dl=1")
+head(house_data)
+
+# Zip Code and City
+zipcity_mapping <- read.csv("https://www.dropbox.com/s/ufksaf273wukx1u/Zip_mapping%20.csv?dl=1")
+
+# Read In Economic Data
+economics <- read.csv("http://federalgovernmentzipcodes.us/free-zipcode-database.csv")
+
+#Eliminate Non Essential Zip Codes
+economics_WA <- subset(economics, State=="WA" & LocationType=="PRIMARY")
+dim(economics_WA)
+rm(economics)
+```
+
+```{r Merging Economic Data with Housing Data}
+sqldf("Select Zipcode, count(*) as cnt from economics_WA group by Zipcode having cnt>1")
+#Subset Columns
+economics_WA <- subset(economics_WA, select=c(Zipcode, TaxReturnsFiled, EstimatedPopulation, TotalWages))
+#Rename Columns
+names(economics_WA)[1] <- paste("zipcode")
+house_data <- merge(house_data, economics_WA, by="zipcode")
+
+```
+
+```{r Checks to confirm if data is loaded correctly}
+## Checks to see if the data has loaded correctly
+str(house_data)
+head(house_data)
+dim(house_data)
+
+```
+
+```{r Imputing missing values}
+## Checking for NAs
+sapply(house_data, function(x) sum(is.na(x)))
+subsetData <- subset(house_data, is.na(TotalWages), select=c(zipcode, TotalWages))
+unique(subsetData$zipcode)
+
+#Zip Code 98052 has TotalWages missing
+#Populate NA Total Wages Using Median HouseHold Income from Web
+house_data$TotalWages[is.na(house_data$TotalWages)] <- 99192.0*2.44
+
+```
+
+```{r Removing duplicates, if any}
+## Checking for duplicates at primary key level
+sqldf("Select count(*) as All_IDs, count(distinct id) as Distinct_IDs from house_data")
+ 
+## Extracting date from the date column to take the most recent entry for the duplicate 
+house_data$year=substr(house_data$date,1,4)
+house_data$month=substr(house_data$date,5,6)
+house_data$day=substr(house_data$date,7,8)
+house_data$date = ISOdate(house_data$year,house_data$month,house_data$day)
+
+## Removing duplicates
+house_data = arrange(house_data,id,desc(date))
+house_data_clean = house_data[!duplicated(house_data$id), ]
+dim(house_data_clean)
+```
+
+```{r Processing Variables}
+#bedrooms
+## Removing rows with bedrooms = 0 since we are not considering these
+house_data_clean = house_data_clean[house_data_clean$bedrooms != 0,]
+house_data_clean$bedrooms[house_data_clean$bedrooms > 5] <- 6
+count(house_data_clean$bedrooms)
+
+#bathrooms
+count(house_data_clean$bathrooms)
+house_data_clean = house_data_clean[house_data_clean$bathrooms != 0,]
+
+#waterfront
+count(house_data_clean$waterfront)
+house_data_clean$waterfront=factor(house_data_clean$waterfront)
+
+#delete view
+house_data_clean=subset(house_data_clean,select=-view)
+ 
+#grade
+count(house_data_clean$grade)
+
+#yr_built/age
+house_data_clean$age=2016-house_data_clean$yr_built
+ 
+#renovated or not?
+unique(house_data_clean$yr_renovated)
+house_data_clean$yr_renov_flag = cut(house_data_clean$yr_renovated, breaks=c(-1,1999,2016), labels=c(0,1))
+
+#house_data_clean$yr_renov_flag[house_data_clean$yr_renovated==2000]
+house_data_clean$yr_renov_flag=factor(house_data_clean$yr_renov_flag)
+count(house_data_clean$yr_renov_flag)
+```
+
+```{r Creating Checkpoint}
+# Creating checkpoint
+house_data_temp=house_data_clean
+str(house_data_clean)
+```
+
+```{r Miscellaneous but imoprtant Stuff}
+# BUCKETING ZIPCODES INTO CITIES
+zipcity_mapping=subset(zipcity_mapping,select=-X)
+house_data_final <- merge(house_data_clean, zipcity_mapping,by="zipcode")
+head(house_data_final)
+sapply(house_data_final, function(x) sum(is.na(x)))
+
+#Create Average Household Income
+house_data_final$Avg_HH_Income <- house_data_final$TotalWages*2.44/ house_data_final$EstimatedPopulation
+
+#Create Average Household Returns
+house_data_final$Avg_Returns <- house_data_final$TaxReturnsFiled*2.44/ house_data_final$EstimatedPopulation
+
+#Remove Extraneous Data Frames
+rm(economics_WA, house_data, house_data_clean, subsetData, zipcity_mapping)
+```
+
+```{r Exploratory Data Analysis}
+## Exploratory Data Analysis
+colnames(house_data_final)
+ 
+## Getting corr between price and continuous features
+## Also checking for collinearity among features
+house_data_corr = subset(house_data_final, select = c(price, bedrooms, bathrooms, sqft_living, sqft_lot, floors, condition, grade, sqft_above,sqft_basement, sqft_living15, sqft_lot15,age, Avg_HH_Income, Avg_Returns))
+str(house_data_corr)
+
+# strength of correlation
+cor(house_data_corr)
+corMatrix <- cor(house_data_corr)
+bm<- 0.7
+
+# looping through the correlation matrix to identify multicollinear variables
+for (i in 1:dim(corMatrix)[1]) {
+  for (j in 1:dim(corMatrix)[2]) {
+      if(abs(corMatrix[i,j]) < bm | i==j) {
+         corMatrix[i,j] <- NA
+      }   else{
+            corMatrix[i,j] <- corMatrix[i,j]
+      }
+  }
+}
+
+corMatrix <- corMatrix[, colSums(is.na(corMatrix)) < dim(corMatrix)[1]]
+corMatrix <- corMatrix[rowSums(is.na(corMatrix)) < dim(corMatrix)[2],]
+corMatrix
+
+corr_mat <-  cor(house_data_corr)
+corrplot(corr_mat, type = "upper",method="square", order = "hclust", tl.col = "black", tl.srt = 45)
+
+### Scatter Plot of Price for Categorical Variables
+# Waterfront ( We can use his for other variables as well)
+sps <- ggplot(house_data_final, aes(x<-sqft_living, y<-price, colour = factor(waterfront))) +
+    geom_point(aes(colour = factor(waterfront))) +
+    guides(fill = FALSE) +
+    scale_colour_brewer(palette = "Set1")
+sps + geom_smooth(method=lm, se=FALSE,fullrange=TRUE)
+
+# Sqft Living Relationship vs Price
+hd1 <- subset(house_data_final, sqft_living<6000) 
+
+b <- qplot(sqft_living*sqft_living, price,data=hd1, geom = c("point", "smooth")) 
+a <- qplot(sqft_living, price,data=hd1, geom = c("point", "smooth")) 
+grid.arrange(a, b, ncol=2)
+
+# Average household Income vs Price
+a <- qplot(Avg_HH_Income, price,data=house_data_final, geom = c("point", "smooth")) 
+b <- qplot(Avg_HH_Income*Avg_HH_Income, price,data=house_data_final, geom = c("point", "smooth")) 
+grid.arrange(a, b, ncol=2)
+
+# Plotting relevant boxplots
+#waterfront
+plot1=ggplot(data = house_data_final) +
+geom_boxplot(aes(x = as.factor(waterfront), y = price, fill = factor(waterfront))) +
+labs(title = "Price vs Waterfront",x="Waterfront",y="Price") + guides(fill = FALSE)
+#yr_renov_flag
+plot2=ggplot(data = house_data_final) +
+geom_boxplot(aes(x = as.factor(yr_renov_flag), y = price, fill = factor(yr_renov_flag))) +
+labs(title = "Price vs Renovated Flag",x="Renovated Flag",y="Price") + guides(fill = FALSE) 
+#grade
+plot3=ggplot(data = house_data_final) +
+geom_boxplot(aes(x = as.factor(grade), y = price, fill = factor(grade))) +
+labs(title = "Price vs Grade",x="Grade",y="Price") + guides(fill = FALSE)
+
+#condition
+plot4=ggplot(data = house_data_final) +
+geom_boxplot(aes(x = as.factor(condition), y = price, fill = factor(condition))) +
+labs(title = "Price vs Condition",x="Condition",y="Price") + guides(fill = FALSE)
+library(grid)
+
+## Plotting boxplot of cities
+plot5=ggplot(data = house_data_final) +
+geom_boxplot(aes(x = as.factor(city), y = price, fill = factor(city))) +
+labs(title = "Price vs Cities",x="City",y="Price") + guides(fill = FALSE)
+
+#arranging plots together
+grid.arrange(arrangeGrob(plot1,plot2,plot3,ncol=3,widths=c(1.25/5,1.25/5,2.5/5)),plot5,heights=c(2/5,3/5),ncol=1)
+
+#Dropping columns R objects not required any more
+rm(plot1,plot2,plot3, plot4, plot5, sps, hd1, a, b, house_data_corr, corr_mat, corMatrix, i, j)
+```
+
+```{r Other stuff}
+# Multi colinear variables were removed
+house_data_model = subset(house_data_final, select = c(price, bedrooms, sqft_living, sqft_lot, floors, waterfront, condition, sqft_basement, age, city, yr_renov_flag, Avg_HH_Income, Avg_Returns))
+
+#Looking at Independent Variable Distributions
+library(reshape2)
+d <- melt(house_data_model)
+ggplot(d,aes(x = value)) +
+    facet_wrap(~variable,scales = "free_x") +
+    geom_histogram()
+
+# Checking distribution of Target Variable
+a = qplot(price,data=house_data_model, geom = "histogram", xlab= "Price", ylab="Frequency", main=" Distribution of Price")
+b = qplot(log(price),data=house_data_model, geom = "histogram", xlab= "Log of Price", ylab="Frequency", main="Distribution of Log price")
+ 
+grid.arrange(a, b, ncol=2)
+
+# CONVERTING PRICE TO LOG 
+house_data_model$price <- log(house_data_model$price)
+
+# Creating dummy variables for cateogrical variables
+dummy_var <- function(df) {  
+  
+  NUM <- function(dataframe)dataframe[,sapply(dataframe,is.numeric)]
+  FAC <- function(dataframe)dataframe[,sapply(dataframe,is.factor)]
+  
+  require(ade4)
+  if (is.null(ncol(NUM(df)))) {
+    DF <- data.frame(NUM(df), acm.disjonctif(FAC(df)))
+    names(DF)[1] <- colnames(df)[which(sapply(df, is.numeric))]
+  } else {
+    DF <- data.frame(NUM(df), acm.disjonctif(FAC(df)))
+  }
+  return(DF)
+} 
+
+house_data_model <- dummy_var(house_data_model)
+head(house_data_model)
+```
+
+## HERE START THE REGRESSIONS
+```{r Partitioning}
+# PARTITIONING DATASET INTO TEST AND TRAINING 
+set.seed(3456)
+dim(house_data_model)
+trainIndex <- createDataPartition(house_data_model$price, p = 0.80, list = FALSE,times = 1)
+house_train <- house_data_model[ trainIndex,]
+house_test  <- house_data_model[-trainIndex,]
+
+# Validating the distribution
+a = qplot(price,data=house_train, geom = "histogram", xlab= "Log of Price", ylab="Frequency", main=" Distribution for Training Data")
+b = qplot(price,data=house_test, geom = "histogram", xlab= "Log of Price", ylab="Frequency", main=" Distribution for Test Data")
+
+grid.arrange(a, b, ncol=2)
+rm(a, b, d)
+```
+
+```{r Defining the functions for diagnostics}
+# DEFINING A DIAGNOSTICS FUNCTION
+Diagnostic_plots <- function(dataToPlot) {
+  
+par(mfcol=c(2,3), fg=colors[24], bg=colors[2],col.lab="black")
+
+# cooks distance - check for influential points
+cook<-cooks.distance(dataToPlot$finalModel)
+halfnorm(cook,3,ylab="Cooks distance", main="Influences",col="skyblue3" ,cex.axis=1.3, cex.lab=1.3, cex.main=1.5)
+
+boxplot(cook, col="skyblue3", ylab="Cooks distance", main="Boxplot Cooks Distances",cex.axis=1.3, cex.lab=1.3, cex.main=1.5)
+ 
+# constant variance
+plot(fitted(dataToPlot),residuals(dataToPlot),xlab="Fitted",ylab="Residuals", col="skyblue3", pch=19,type='p', main="Residual vs Fitted",cex.axis=1.3, cex.lab=1.3, cex.main=1.5)
+ 
+abline(h=0)
+ 
+plot(fitted(dataToPlot),abs(residuals(dataToPlot)),xlab="Fitted",ylab="Abs(Residuals)", main="Abs(Resid) vs. Fitted", col="skyblue3", pch=19,cex.axis=1.3, cex.lab=1.3, cex.main=1.5)
+ 
+# normality
+qqnorm(residuals(dataToPlot),ylab="Residuals", pch=19, col="skyblue4",cex.axis=1.3, cex.lab=1.3, cex.main=1.5)
+ 
+qqline(residuals(dataToPlot))
+ 
+hist(residuals(dataToPlot), col="skyblue3",xlab="Residuals", main="Histogram of Residuals",cex.axis=1.3, cex.lab=1.3, cex.main=1.5)
+}
+```
+
+```{r Regression}
+# REGRESSION - FIRST ITERATION 
+
+```{r Regression}
+# REGRESSION - FIRST ITERATION 
+ctrl <- trainControl(method="cv", number=10,
+                     classProbs = FALSE,
+                     summaryFunction = defaultSummary)
+                     
+lmfit <- train(price ~ .+sqft_living*bedrooms+condition*age+waterfront.1*sqft_lot-yr_renov_flag.0-waterfront.0-city.Woodinville-city.Kenmore-city.Snoqualmie-floors-city.Tukwila-city.Bothell-city.Seattle-city.Fall.City-city.Vashon,
+                  data = house_train,
+                  method = "lm",
+                  trControl = ctrl,
+                  preProcess = c("center", "scale"),
+                  metric = "RMSE")
+summary(lmfit)                  
+```
+
+# Second iteration 
+house_train_v1<-subset(house_train,select=-c(yr_renov_flag.0,waterfront.0,city.Woodinville,city.Kenmore,city.Snoqualmie,floors,city.Tukwila,city.Bothell,city.Seattle,city.Fall.City,city.Vashon))
+
+lmfit <- train(price ~ .+sqft_living*bedrooms+condition*age+waterfront.1*sqft_lot,
+                  data = house_train_v1,
+                  method = "lm",
+                  trControl = ctrl,
+                  preProcess = c("center", "scale"),
+                  metric = "RMSE")
+
+Diagnostic_plots(lmfit)
+
+##removing influential observation
+house_train_v1[c(8688,6867),]
+
+house_train_v2 <- subset(house_train_v1,sqft_lot!=505166)
+house_train_v2 <- subset(house_train_v2,sqft_lot!=307752)
+dim(house_train_v2)
+
+lmfit1 <- train(price ~ .+sqft_living*bedrooms+condition*age+waterfront.1*sqft_lot,
+                  data = house_train_v2,
+                  method = "lm",
+                  trControl = ctrl,
+                  preProcess = c("center", "scale"),
+                  metric = "RMSE")
+
+summary(lmfit1)
+Diagnostic_plots(lmfit1)
+
+# REGRESSION - Second ITERATION
+
+house_train_v2[c(13134, 8670, 2457, 2903),]
+house_train_v3 <- subset(house_train_v2,sqft_lot!=91681)
+house_train_v3 <- subset(house_train_v3,sqft_lot!=167125)
+house_train_v3 <- subset(house_train_v3,sqft_lot!=1074218)
+house_train_v3 <- subset(house_train_v3,sqft_lot!=107386)
+
+dim(house_train_v3)
+
+lmfit2 <- train(price ~ .+sqft_living*bedrooms+condition*age+waterfront.1*sqft_lot,
+                  data = house_train_v3,
+                  method = "lm",
+                  trControl = ctrl,
+                  preProcess = c("center", "scale"),
+                  metric = "RMSE")
+
+summary(lmfit2)
+Diagnostic_plots(lmfit2)
+
+rm(lmfit, lmfit1, house_train_v1, house_train_v2, house_data_temp)
+
+## Running the model on the test dataset
+
+testYhatLm <- predict(lmfit2, newdata = house_test)
+
+# forecasts on testset
+TestStatsLM <- postResample(pred=testYhatLm , obs=house_test$price)
+TestStatsLM[[1]]^2
+TestStatsLM
+
+### Implementing Lasso 
+hd_lasso
+hd_lasso = subset(house_data_final, select=-c(zipcode, id, date, year, month, day, lat, long, sqft_above, sqft_basement, TotalWages, TaxReturnsFiled, yr_built))
+head(house_data_final, n=2)
+head(hd_lasso, n=2)
+
+## Modifying bedroom as ordered factor
+hd_lasso$bedrooms <- ordered(as.factor(hd_lasso$bedrooms), levels = c("1", "2", "3", "4", "5", "6"))
+count(hd_lasso,'bedrooms')
+
+## Modifying floors as ordered factor
+hd_lasso$floors <- ordered(as.factor(hd_lasso$floors), levels = c("1", "1.5", "2", "2.5", "3", "3.5"))
+count(hd_lasso,'floors')
+str(hd_lasso)
+
+## Modifying condition as ordered factor
+hd_lasso$condition <- ordered(as.factor(hd_lasso$condition), levels = c("1", "2", "3", "4", "5"))
+count(hd_lasso,'condition')
+str(hd_lasso)
+
+## Modifying grade as ordered factor
+hd_lasso$grade <- ordered(as.factor(hd_lasso$grade), levels = c("3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"))
+count(hd_lasso,'grade')
+str(hd_lasso)
+
+## Running a lasso
+
+# CONVERTING PRICE TO LOG 
+
+hd_lasso$price <- log(hd_lasso$price)
+head(hd_lasso)
+str(hd_lasso)
+
+## HERE START THE REGRESSIONS
+
+# PARTITIONING DATASET INTO TEST AND TRAINING 
+set.seed(3456)
+dim(hd_lasso)
+trainInd <- createDataPartition(hd_lasso$price, p = 0.80, list = FALSE,times = 1)
+hd_train <- hd_lasso[ trainInd,]
+hd_test  <- hd_lasso[-trainInd,]
+
+# Validating the distribution
+a = qplot(price,data=hd_train, geom = "histogram", xlab= "Log of Price", ylab="Frequency", main=" Distribution for Training Data")
+b = qplot(price,data=hd_test, geom = "histogram", xlab= "Log of Price", ylab="Frequency", main=" Distribution for Test Data")
+
+head(hd_train)
+          
+lassofit <- train(price ~ .,
+                  data = hd_train,
+                  method = "lars",
+                  trControl = ctrl,
+                  preProcess=c("center","scale"),
+                  tuneLength = 20,
+                  metric = "RMSE")
+summary(lassofit)
+lassofit
+
+# coeffecients from LASSO
+predict(lassofit$finalModel, type='coefficients', s=lassofit$bestTune$fraction, mode='fraction')
+
+# predictions on scaled training set - caret knows to transform based on how it 
+# was done on the training set
+testYhatLasso  <- predict(lassofit, newdata = hd_test)
+
+# forecasts on testset
+TestErrorLasso <- postResample(pred=testYhatLasso, obs=hd_test$price)
+TestErrorLasso[[1]]^2
+TestErrorLasso
+
+##comparing performance of Lasso and Linear Regression
+
+# Resampling and seeing the variation in specificity, sensitivity and ROC for all the three models
+
+resamps <- resamples(list(LASSO = lassofit,                    
+                          Linear_Regression = lmfit2))
+resamps
+
+summary(resamps)
+
+### box plot of all three metrics for all the models
+bwplot(resamps, layout = c(3, 1))
+
+##scatter plot of ROC for various resamples for all the three models
+splom(resamps)
+library(caret)
+
